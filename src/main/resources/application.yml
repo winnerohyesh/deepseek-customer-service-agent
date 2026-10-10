@@ -1,39 +1,167 @@
-spring:
-  application:
-    name: deepseek-customer-agent
-  datasource:
-    url: jdbc:postgresql://localhost:5432/customer_agent
-    username: postgres
-    password: postgres
-    driver-class-name: org.postgresql.Driver
-  jpa:
-    hibernate:
-      ddl-auto: update
-    properties:
-      hibernate:
-        format_sql: true
-        dialect: org.hibernate.dialect.PostgreSQLDialect
-    show-sql: false
+# DeepSeek 智能客服 Agent
 
-server:
-  port: 8080
+这是一个基于 JDK 17 + Spring Boot 3 + DeepSeek API 的本地可运行智能客服 Agent 应用，满足以下要求：
 
-management:
-  endpoints:
-    web:
-      exposure:
-        include: health,info,metrics
+- 支持多流会话（多 conversation / 多用户）
+- 支持知识库（RAG）
+- 不使用 AI 框架，仅通过 DeepSeek API 集成大模型
+- 具备工程化能力：日志、异常处理、配置、API 设计、可扩展性
 
-deepseek:
-  api-key: ${DEEPSEEK_API_KEY:}
-  base-url: https://api.deepseek.com
-  model: deepseek-chat
-  max-tokens: 1024
-  temperature: 0.7
-  timeout-ms: 60000
-  stream: true
+## 技术栈
 
-logging:
-  level:
-    root: INFO
-    com.winnerohyesh.customeragent: DEBUG
+- Java 17
+- Spring Boot 3.3.x
+- Spring Data JPA
+- PostgreSQL
+- Maven
+- DeepSeek API
+- Springdoc OpenAPI
+
+## 运行前提
+
+1. 安装 JDK 17+
+2. 安装 PostgreSQL 15+，或直接使用 docker-compose
+3. 准备 DeepSeek API Key
+4. 确保本机可以访问 DeepSeek API
+
+## 快速启动
+
+### 1）启动 PostgreSQL
+
+```bash
+docker-compose up -d postgres
+```
+
+### 2）填写环境变量
+
+```bash
+cp .env.example .env
+# 编辑 .env，填入真实 DeepSeek API Key
+```
+
+### 3）启动应用
+
+推荐使用 Maven 直接启动：
+
+```bash
+bash mvnw clean package
+java -jar target/deepseek-customer-agent-0.0.1-SNAPSHOT.jar
+```
+
+如果本机已安装 Maven，也可以直接：
+
+```bash
+mvn clean package
+java -jar target/deepseek-customer-agent-0.0.1-SNAPSHOT.jar
+```
+
+### 4）访问地址
+
+- Swagger UI: http://localhost:8080/swagger-ui/index.html
+- Actuator: http://localhost:8080/actuator/health
+
+## 关键 API
+
+### 创建会话
+
+```http
+POST /api/sessions
+Content-Type: application/json
+
+{
+  "userId": "user-001",
+  "title": "订单咨询"
+}
+```
+
+### 发消息（普通模式）
+
+```http
+POST /api/chat
+Content-Type: application/json
+
+{
+  "conversationId": "conv-uuid",
+  "userId": "user-001",
+  "message": "我的订单还没发货，怎么处理？"
+}
+```
+
+### 流式消息（SSE）
+
+```http
+GET /api/chat/stream?conversationId=conv-uuid&userId=user-001&message=我的订单还没发货，怎么处理？
+```
+
+### 查询会话历史
+
+```http
+GET /api/chat/history/{conversationId}
+```
+
+### 导入知识库
+
+```http
+POST /api/knowledge/import
+Content-Type: application/json
+
+{
+  "title": "退货政策",
+  "category": "policy",
+  "content": "在签收后的7天内，符合条件的订单可以申请退货。",
+  "sourceUrl": "https://example.com/policy"
+}
+```
+
+### 查询知识库列表
+
+```http
+GET /api/knowledge
+```
+
+## 应用架构说明
+
+- 会话层：每个 conversation 代表一个独立客服流
+- 记录层：保存用户消息和助手回复
+- 知识库：简单文本分块 + 关键词召回，适合本地开发和演示
+- DeepSeek：仅通过 HTTP API 调用大模型
+- 工程化：统一异常、配置管理、日志、接口文档
+
+## 环境切换
+
+默认启动使用 `application.yml`，可切换环境：
+
+```bash
+SPRING_PROFILES_ACTIVE=dev java -jar target/deepseek-customer-agent-0.0.1-SNAPSHOT.jar
+```
+
+或者：
+
+```bash
+SPRING_PROFILES_ACTIVE=prod java -jar target/deepseek-customer-agent-0.0.1-SNAPSHOT.jar
+```
+
+## 后续扩展建议
+
+- 接入 pgvector 做真正的语义召回
+- 增加 Redis 限流、缓存和幂等控制
+- 在消息表中增加 token 统计和审计日志
+- 增加工单流转与人工接管能力
+- 增加 WebSocket 或 SSE 任务队列管理
+
+## 说明
+
+这个项目已经具备：
+
+- 多会话能力
+- 知识库导入
+- DeepSeek API 接入
+- 流式响应接口
+- 可扩展的 Spring Boot 服务层
+
+如果需要进一步增强为生产级版本，可继续补齐：
+
+- pgvector 语义召回
+- Prometheus / Grafana 监控
+- 分布式任务与消息队列
+- 安全认证与多租户隔离
