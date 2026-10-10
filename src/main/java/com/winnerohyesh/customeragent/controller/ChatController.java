@@ -1,104 +1,83 @@
-package com.winnerohyesh.customeragent.service;
+package com.winnerohyesh.customeragent.controller;
 
+import com.winnerohyesh.customeragent.dto.ChatRequest;
+import com.winnerohyesh.customeragent.dto.ChatResponse;
+import com.winnerohyesh.customeragent.dto.ConversationCreateRequest;
 import com.winnerohyesh.customeragent.entity.ChatMessage;
 import com.winnerohyesh.customeragent.entity.Conversation;
-import com.winnerohyesh.customeragent.entity.KnowledgeChunk;
-import com.winnerohyesh.customeragent.exception.ApiException;
-import com.winnerohyesh.customeragent.repository.ChatMessageRepository;
-import com.winnerohyesh.customeragent.repository.ConversationRepository;
+import com.winnerohyesh.customeragent.service.ChatService;
+import com.winnerohyesh.customeragent.service.SessionService;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
-import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Flux;
 
-import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 
-@Service
+@RestController
+@RequestMapping("/api")
 @RequiredArgsConstructor
-public class ChatService {
+@Tag(name = "chat", description = "会话与聊天接口")
+public class ChatController {
 
-    private final ConversationRepository conversationRepository;
-    private final ChatMessageRepository chatMessageRepository;
-    private final DeepSeekService deepSeekService;
-    private final KnowledgeService knowledgeService;
+    private final ChatService chatService;
+    private final SessionService sessionService;
 
-    @Transactional
-    public String sendMessage(String conversationId, String userId, String message) {
-        Conversation conversation = conversationRepository.findByConversationId(conversationId)
-                .orElseThrow(() -> new ApiException("会话不存在: " + conversationId));
-
-        if (!conversation.getUserId().equals(userId)) {
-            throw new ApiException("该用户无权访问此会话");
-        }
-
-        ChatMessage userMessage = ChatMessage.builder()
-                .conversationId(conversationId)
-                .role("user")
-                .content(message)
-                .createdAt(Instant.now())
-                .build();
-        chatMessageRepository.save(userMessage);
-
-        List<ChatMessage> history = chatMessageRepository.findByConversationIdOrderByCreatedAtAsc(conversationId);
-        List<KnowledgeChunk> relevantKnowledge = knowledgeService.searchRelevantKnowledge(message, 5);
-
-        String answer = deepSeekService.generateReply(history, relevantKnowledge, message);
-
-        ChatMessage assistantMessage = ChatMessage.builder()
-                .conversationId(conversationId)
-                .role("assistant")
-                .content(answer)
-                .createdAt(Instant.now())
-                .build();
-        chatMessageRepository.save(assistantMessage);
-
-        conversation.setUpdatedAt(Instant.now());
-        conversationRepository.save(conversation);
-
-        return answer;
+    @PostMapping("/sessions")
+    @Operation(summary = "创建会话")
+    public ResponseEntity<Map<String, Object>> createSession(@Valid @RequestBody ConversationCreateRequest request) {
+        Conversation conversation = sessionService.createSession(request.getUserId(), request.getTitle());
+        return ResponseEntity.ok(Map.of(
+                "conversationId", conversation.getConversationId(),
+                "title", conversation.getTitle(),
+                "userId", conversation.getUserId()
+        ));
     }
 
-    @Transactional
-    public Flux<String> streamReply(String conversationId, String userId, String message) {
-        Conversation conversation = conversationRepository.findByConversationId(conversationId)
-                .orElseThrow(() -> new ApiException("会话不存在: " + conversationId));
-
-        if (!conversation.getUserId().equals(userId)) {
-            throw new ApiException("该用户无权访问此会话");
-        }
-
-        ChatMessage userMessage = ChatMessage.builder()
-                .conversationId(conversationId)
-                .role("user")
-                .content(message)
-                .createdAt(Instant.now())
-                .build();
-        chatMessageRepository.save(userMessage);
-
-        List<ChatMessage> history = chatMessageRepository.findByConversationIdOrderByCreatedAtAsc(conversationId);
-        List<KnowledgeChunk> relevantKnowledge = knowledgeService.searchRelevantKnowledge(message, 5);
-
-        StringBuilder buffer = new StringBuilder();
-
-        return deepSeekService.generateStreamReply(history, relevantKnowledge, message)
-                .doOnNext(buffer::append)
-                .doOnComplete(() -> {
-                    if (buffer.length() > 0) {
-                        ChatMessage assistantMessage = ChatMessage.builder()
-                                .conversationId(conversationId)
-                                .role("assistant")
-                                .content(buffer.toString())
-                                .createdAt(Instant.now())
-                                .build();
-                        chatMessageRepository.save(assistantMessage);
-                    }
-                    conversation.setUpdatedAt(Instant.now());
-                    conversationRepository.save(conversation);
-                });
+    @GetMapping("/sessions/{userId}")
+    @Operation(summary = "查询用户会话列表")
+    public ResponseEntity<List<Conversation>> listSessions(@PathVariable String userId) {
+        return ResponseEntity.ok(sessionService.listByUser(userId));
     }
 
-    public List<ChatMessage> getConversationHistory(String conversationId) {
-        return chatMessageRepository.findByConversationIdOrderByCreatedAtAsc(conversationId);
+    @PostMapping("/chat")
+    @Operation(summary = "发送聊天消息")
+    public ResponseEntity<ChatResponse> sendMessage(@Valid @RequestBody ChatRequest request) {
+        String answer = chatService.sendMessage(request.getConversationId(), request.getUserId(), request.getMessage());
+        return ResponseEntity.ok(ChatResponse.builder()
+                .conversationId(request.getConversationId())
+                .answer(answer)
+                .knowledgeCount(5)
+                .build());
+    }
+
+    @GetMapping(value = "/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    @Operation(summary = "流式聊天接口")
+    public Flux<String> streamMessage(
+            @RequestParam String conversationId,
+            @RequestParam String userId,
+            @RequestParam String message) {
+        return chatService.streamReply(conversationId, userId, message)
+                .map(part -> "data: {\"content\":\"" + sanitize(part) + "\"}\n\n");
+    }
+
+    @GetMapping("/chat/history/{conversationId}")
+    @Operation(summary = "查询会话历史")
+    public ResponseEntity<List<ChatMessage>> getHistory(@PathVariable String conversationId) {
+        return ResponseEntity.ok(chatService.getConversationHistory(conversationId));
+    }
+
+    private String sanitize(String value) {
+        if (value == null) {
+            return "";
+        }
+        return value.replace("\\", "\\\\")
+                .replace("\n", "\\n")
+                .replace("\"", "\\\"");
     }
 }
